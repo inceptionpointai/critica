@@ -49,7 +49,8 @@ def _bool_env(name: str, default: bool = False) -> bool:
 # External-service credentials
 ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY     = os.environ.get("OPENAI_API_KEY", "")
-SPREAKER_API_KEY   = os.environ.get("SPREAKER_API_KEY", "")
+SPREAKER_API_KEY   = os.environ.get("SPREAKER_API_KEY", "") or os.environ.get("SPREAKER_TOKEN", "")
+SPREAKER_USER_ID   = os.environ.get("SPREAKER_USER_ID", "")  # for future list-by-user endpoints
 
 # Auth
 API_KEYS  = {k.strip() for k in os.environ.get("CRITICA_API_KEYS", "").split(",") if k.strip()}
