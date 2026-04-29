@@ -17,11 +17,28 @@ from . import config
 log = logging.getLogger("critica.transcribe")
 
 
+_OPENAI_SUPPORTED_EXTS = {"flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "oga", "ogg", "wav", "webm"}
+
+
+def _ext_from_url(url: str) -> str:
+    """Whisper rejects files without a recognizable audio extension; we
+    can't write `.bin`. Spreaker download URLs end in `.mp3`; for other
+    sources we pull the suffix off the URL path. Falls back to `mp3`."""
+    from urllib.parse import urlparse
+    path = urlparse(url).path
+    if "." in path:
+        ext = path.rsplit(".", 1)[-1].lower()
+        if ext in _OPENAI_SUPPORTED_EXTS:
+            return ext
+    return "mp3"
+
+
 def fetch_audio_to_tmp(audio_url: str) -> str:
     """Stream the audio to a temp file with a hard size cap. Returns the
     local path. Raises if oversized or unreachable."""
     max_bytes = config.MAX_AUDIO_MB * 1024 * 1024
-    tmp = config.TMP_DIR / f"c_{uuid.uuid4().hex[:12]}.bin"
+    ext = _ext_from_url(audio_url)
+    tmp = config.TMP_DIR / f"c_{uuid.uuid4().hex[:12]}.{ext}"
     total = 0
     try:
         r = requests.get(audio_url, stream=True, timeout=config.REQUEST_TIMEOUT_S)
