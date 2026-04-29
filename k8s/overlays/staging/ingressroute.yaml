@@ -1,0 +1,15 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: critica
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`staging.critica.inceptionpoint.ai`)
+      kind: Rule
+      services:
+        - name: critica
+          port: 80
+  tls:
+    secretName: critica-staging-tls

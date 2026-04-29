@@ -1,0 +1,77 @@
+name: Deploy Production
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: write
+
+env:
+  AWS_REGION: us-west-2
+  ECR_REGISTRY: 673066883217.dkr.ecr.us-west-2.amazonaws.com
+  ECR_REPOSITORY: ipoint-critica-prod
+  ROLE_ARN: arn:aws:iam::673066883217:role/ipoint-prod-github-actions-critica
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Switch to main for kustomization update
+        run: git checkout main
+
+      - name: Install kustomize
+        run: |
+          curl -sLo kustomize.tar.gz \
+            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
+          tar xzf kustomize.tar.gz
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Update prod kustomization image tag
+        run: |
+          cd k8s/overlays/prod
+          kustomize edit set image "critica=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add k8s/overlays/prod/kustomization.yaml
+          git commit -m "chore: deploy production ${{ github.ref_name }} to ${{ github.sha }}"
+          git pull --rebase origin main
+          git push
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" --generate-notes

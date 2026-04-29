@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: critica-config
+data:
+  HOST: "0.0.0.0"
+  PORT: "8080"
+  UVICORN_WORKERS: "4"
+  MAX_AUDIO_MB: "500"
+  REQUEST_TIMEOUT_S: "600"
+  CLAUDE_MODEL: "claude-opus-4-5"
+  CLAUDE_MAX_TOKENS: "4096"
+  CLAUDE_MAX_RETRIES: "3"
+  WHISPER_MODEL: "whisper-1"
+  SPREAKER_BASE_URL: "https://api.spreaker.com/v2"
+  CRITICA_TMP_DIR: "/tmp/critica"
+  TMP_TTL_S: "3600"
