@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS critica.episode_reviews (
     ts                      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     spreaker_episode_id     TEXT,
     spreaker_show_id        TEXT,
+    show_title              TEXT,
     title                   TEXT,
     duration_s              NUMERIC(10, 2),
     detected_language       TEXT,
