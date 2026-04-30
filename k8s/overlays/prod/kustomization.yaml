@@ -4,17 +4,17 @@ kind: Kustomization
 namespace: prod
 
 resources:
-  - ../../base
-  - externalsecret.yaml
-  - ingressroute.yaml
+- ../../base
+- externalsecret.yaml
+- ingressroute.yaml
 
 images:
-  - name: critica
-    newName: 673066883217.dkr.ecr.us-west-2.amazonaws.com/ipoint-critica-prod
-    newTag: latest
+- name: critica
+  newName: 673066883217.dkr.ecr.us-west-2.amazonaws.com/ipoint-critica-prod
+  newTag: ea0206bfb30f93dfd83247c9d46b7087b5d532f7
 
 commonLabels:
   environment: prod
 
 patches:
-  - path: patches/replicas.yaml
+- path: patches/replicas.yaml
