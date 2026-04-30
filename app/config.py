@@ -63,7 +63,19 @@ MAX_AUDIO_MB      = _int_env("MAX_AUDIO_MB", 500)
 REQUEST_TIMEOUT_S = _int_env("REQUEST_TIMEOUT_S", 600)
 
 # LLM
+# Two backends supported:
+#   1. Anthropic direct via the SDK — set ANTHROPIC_API_KEY, leave OPENROUTER_API_KEY blank.
+#   2. OpenRouter (OpenAI-compatible) — set OPENROUTER_API_KEY. Used when set, even if
+#      ANTHROPIC_API_KEY is also set (lets us fall back when the Anthropic org is
+#      suspended without code changes).
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+
+# Model id format differs by backend:
+#   anthropic direct: 'claude-opus-4-5'
+#   openrouter:       'anthropic/claude-opus-4.5'
 CLAUDE_MODEL       = os.environ.get("CLAUDE_MODEL", "claude-opus-4-5")
+OPENROUTER_MODEL   = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-opus-4.5")
 CLAUDE_MAX_TOKENS  = _int_env("CLAUDE_MAX_TOKENS", 4096, min_value=512)
 CLAUDE_MAX_RETRIES = _int_env("CLAUDE_MAX_RETRIES", 3)
 
