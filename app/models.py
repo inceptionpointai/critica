@@ -49,6 +49,15 @@ class RubricResult(BaseModel):
 
 # ── Response ────────────────────────────────────────────────────────────────
 
+class RefusalCheck(BaseModel):
+    """Output of the deterministic refusal-leak detector — a separate
+    signal from the LLM rubric. When severity='hard', the review's
+    overall_score is forced to 0.0 regardless of what the LLM scored."""
+    severity: str = Field(..., description="'none' | 'soft' | 'hard'")
+    matched_labels: List[str] = Field(default_factory=list)
+    snippets: List[str] = Field(default_factory=list)
+
+
 class ReviewResponse(BaseModel):
     request_id: str
     spreaker_episode_id: Optional[str] = None
@@ -59,6 +68,10 @@ class ReviewResponse(BaseModel):
     pacing_wpm_stdev: Optional[float] = None
 
     rubric: RubricResult
+    refusal: RefusalCheck = Field(
+        default_factory=lambda: RefusalCheck(severity="none"),
+        description="Deterministic refusal-leak check — severity='hard' overrides rubric score to 0/F",
+    )
     elapsed_s: float
     model: str
     context_ref: Optional[str] = None

@@ -60,23 +60,25 @@ def fingerprint_key(api_key: str) -> str:
 
 _INSERT_REVIEW = """
 INSERT INTO critica.episode_reviews (
-    request_id, spreaker_episode_id, spreaker_show_id, title,
+    request_id, spreaker_episode_id, spreaker_show_id, show_title, title,
     duration_s, detected_language,
     pacing_wpm_mean, pacing_wpm_stdev,
     overall_score, grade,
     dimensions, summary, critique, recommendations,
     transcript_sha256, model,
     input_tokens, output_tokens, cache_read_input_tokens,
-    elapsed_s, caller_fingerprint, context_ref
+    elapsed_s, caller_fingerprint, context_ref,
+    refusal_detected, refusal_severity, refusal_labels
 ) VALUES (
-    %s, %s, %s, %s,
+    %s, %s, %s, %s, %s,
     %s, %s,
     %s, %s,
     %s, %s,
     %s::jsonb, %s, %s, %s::jsonb,
     %s, %s,
     %s, %s, %s,
-    %s, %s, %s
+    %s, %s, %s,
+    %s, %s, %s::jsonb
 )
 ON CONFLICT (request_id) DO NOTHING
 """
@@ -107,6 +109,9 @@ def record_review(
     elapsed_s: float,
     caller_fingerprint: str,
     context_ref: Optional[str],
+    show_title: Optional[str] = None,
+    refusal_severity: str = "none",
+    refusal_labels: Optional[list] = None,
 ) -> None:
     pool = _get_pool()
     if pool is None:
@@ -119,6 +124,7 @@ def record_review(
                     str(request_id),
                     spreaker_episode_id,
                     spreaker_show_id,
+                    show_title,
                     title,
                     duration_s,
                     detected_language,
@@ -138,6 +144,9 @@ def record_review(
                     elapsed_s,
                     caller_fingerprint or None,
                     context_ref or None,
+                    refusal_severity == "hard",  # boolean: refusal_detected
+                    refusal_severity,
+                    json.dumps(refusal_labels or []),
                 ))
                 cur.execute(_INSERT_TRANSCRIPT, (
                     str(request_id),
