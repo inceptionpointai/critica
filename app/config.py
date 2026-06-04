@@ -63,15 +63,37 @@ MAX_AUDIO_MB      = _int_env("MAX_AUDIO_MB", 500)
 REQUEST_TIMEOUT_S = _int_env("REQUEST_TIMEOUT_S", 600)
 
 # LLM
-# Two backends supported:
-#   1. Anthropic direct via the SDK — set ANTHROPIC_API_KEY, leave OPENROUTER_API_KEY blank.
-#   2. OpenRouter (OpenAI-compatible) — set OPENROUTER_API_KEY. Used when set, even if
-#      ANTHROPIC_API_KEY is also set (lets us fall back when the Anthropic org is
-#      suspended without code changes).
+# Three backends supported, selected by LLM_BACKEND (default 'bedrock'):
+#   1. 'bedrock'    — AWS Bedrock via anthropic.AnthropicBedrock, auth by IRSA.
+#                     Account-billed; preferred path. No API key needed.
+#   2. 'anthropic'  — Anthropic API direct via anthropic.Anthropic.
+#                     Requires ANTHROPIC_API_KEY. Kept as break-glass for when
+#                     the Bedrock plane has a regional incident.
+#   3. 'openrouter' — OpenAI-compatible router (anthropic/claude-opus-4.5 etc).
+#                     Requires OPENROUTER_API_KEY. Currently unwired in cluster
+#                     (no ExternalSecret entry) — local-dev / future-work only.
+# Routing is EXPLICIT; setting an api key alone no longer flips backends.
+LLM_BACKEND = os.environ.get("LLM_BACKEND", "bedrock").strip().lower()
+
+# AWS Bedrock. Note: AWS_REGION fallback here is the seatbelt for when the
+# ConfigMap forgets to set it — IRSA injects nothing region-related, so the
+# boto chain would otherwise read $HOME/.aws/config (absent in-cluster).
+AWS_REGION    = os.environ.get("AWS_REGION", "us-west-2")
+# Cross-region inference profile id, NOT a bare foundation-model id. Claude
+# Opus families on Bedrock require a profile (us.* or global.*) for
+# InvokeModel; the bare anthropic.claude-opus-4-* id 400s with
+# "on-demand throughput isn't supported."
+BEDROCK_MODEL = os.environ.get(
+    "BEDROCK_MODEL",
+    "us.anthropic.claude-opus-4-5-20251101-v1:0",
+)
+
+# OpenRouter (break-glass / local dev)
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
 # Model id format differs by backend:
+#   bedrock:          'us.anthropic.claude-opus-4-5-20251101-v1:0' (BEDROCK_MODEL)
 #   anthropic direct: 'claude-opus-4-5'
 #   openrouter:       'anthropic/claude-opus-4.5'
 CLAUDE_MODEL       = os.environ.get("CLAUDE_MODEL", "claude-opus-4-5")

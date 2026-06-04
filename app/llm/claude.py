@@ -1,11 +1,13 @@
 """LLM client for Critica's scoring pass.
 
-Two backends, switched by env:
-  - OPENROUTER_API_KEY set → OpenRouter (OpenAI-compatible, can route to
-    Anthropic/Bedrock/etc). Used when set even if Anthropic direct is
-    also configured, so we can fall back when an Anthropic org is
-    suspended without a code change.
-  - Otherwise → Anthropic SDK direct.
+Three backends, switched explicitly by config.LLM_BACKEND:
+  - 'bedrock'    → anthropic.AnthropicBedrock (AWS Bedrock, IRSA-auth, default).
+  - 'anthropic'  → anthropic.Anthropic (direct API, requires ANTHROPIC_API_KEY).
+  - 'openrouter' → openai.OpenAI against OpenRouter (requires OPENROUTER_API_KEY).
+
+Bedrock and Anthropic-direct share the exact same messages.create(...) shape
+including the cache_control ephemeral system block, so a single helper drives
+both.
 
 Failures bubble up. Unlike the analytics-db sink, the LLM IS the service
 contract — if scoring fails, the request fails.
@@ -22,7 +24,22 @@ from ..rubric import SYSTEM_PROMPT, build_prompt
 log = logging.getLogger("critica.llm.claude")
 
 _anthropic_client: Any = None
+_bedrock_client: Any = None
 _openrouter_client: Any = None
+
+
+def _get_bedrock_client():
+    """Lazy-build AnthropicBedrock. boto3 picks up IRSA-injected
+    AWS_ROLE_ARN + AWS_WEB_IDENTITY_TOKEN_FILE via the default credential
+    chain — no explicit AWS keys needed."""
+    global _bedrock_client
+    if _bedrock_client is None:
+        from anthropic import AnthropicBedrock
+        _bedrock_client = AnthropicBedrock(
+            aws_region=config.AWS_REGION,
+            timeout=config.REQUEST_TIMEOUT_S,
+        )
+    return _bedrock_client
 
 
 def _get_anthropic_client():
@@ -51,10 +68,14 @@ def _get_openrouter_client():
 
 
 def _backend() -> str:
-    """Returns 'openrouter' or 'anthropic' based on which env var is set."""
-    if config.OPENROUTER_API_KEY:
-        return "openrouter"
-    return "anthropic"
+    """Explicit dispatch via LLM_BACKEND. Implicit fallbacks on api-key
+    presence were removed: with three backends the env-var-presence dance
+    is a footgun."""
+    b = (config.LLM_BACKEND or "").strip().lower()
+    if b in ("bedrock", "anthropic", "openrouter"):
+        return b
+    raise RuntimeError(f"invalid LLM_BACKEND={b!r}; "
+                       f"expected one of: bedrock, anthropic, openrouter")
 
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -74,17 +95,18 @@ def _extract_json(text: str) -> dict:
     return json.loads(m.group(0))
 
 
-def _score_via_anthropic(system: str, user: str) -> tuple[dict, dict]:
-    """Anthropic SDK direct. Uses ephemeral prompt caching on the system
-    block (the rubric is static) so repeat calls within 5min get ~80% of
-    input tokens free."""
-    client = _get_anthropic_client()
+def _score_via_messages_api(client, model_id: str, backend_name: str,
+                            system: str, user: str) -> tuple[dict, dict]:
+    """Anthropic Messages API call. Drives both AnthropicBedrock and
+    Anthropic-direct — the signature is byte-identical, including the
+    ephemeral cache_control block (the rubric system prompt is static, so
+    repeat calls within 5min get ~80% of input tokens free)."""
     last_err: Exception | None = None
     for attempt in range(config.CLAUDE_MAX_RETRIES):
         try:
             t0 = time.time()
             resp = client.messages.create(
-                model=config.CLAUDE_MODEL,
+                model=model_id,
                 max_tokens=config.CLAUDE_MAX_TOKENS,
                 system=[{
                     "type": "text",
@@ -101,11 +123,11 @@ def _score_via_anthropic(system: str, user: str) -> tuple[dict, dict]:
                 "cache_creation_input_tokens": getattr(resp.usage, "cache_creation_input_tokens", 0),
                 "cache_read_input_tokens":     getattr(resp.usage, "cache_read_input_tokens", 0),
                 "elapsed_s": round(elapsed, 3),
-                "model":     config.CLAUDE_MODEL,
-                "backend":   "anthropic",
+                "model":     model_id,
+                "backend":   backend_name,
             }
-            log.info("anthropic ok: in_tok=%d out_tok=%d cache_read=%d elapsed_s=%.2f",
-                     usage["input_tokens"], usage["output_tokens"],
+            log.info("%s ok: in_tok=%d out_tok=%d cache_read=%d elapsed_s=%.2f",
+                     backend_name, usage["input_tokens"], usage["output_tokens"],
                      usage["cache_read_input_tokens"], elapsed)
             return _extract_json(text), usage
         except Exception as e:
@@ -113,10 +135,12 @@ def _score_via_anthropic(system: str, user: str) -> tuple[dict, dict]:
             from anthropic import APIStatusError
             if isinstance(e, APIStatusError) and 400 <= e.status_code < 500:
                 raise
-            log.warning("anthropic attempt %d failed (%s); retrying", attempt + 1, type(e).__name__)
+            log.warning("%s attempt %d failed (%s); retrying",
+                        backend_name, attempt + 1, type(e).__name__)
             if attempt < config.CLAUDE_MAX_RETRIES - 1:
                 time.sleep(0.5 * (2 ** attempt))
-    raise RuntimeError(f"anthropic scoring failed after {config.CLAUDE_MAX_RETRIES} attempts: {last_err}")
+    raise RuntimeError(f"{backend_name} scoring failed after "
+                       f"{config.CLAUDE_MAX_RETRIES} attempts: {last_err}")
 
 
 def _score_via_openrouter(system: str, user: str) -> tuple[dict, dict]:
@@ -165,9 +189,18 @@ def score_transcript(transcript: str,
                      word_timings: list | None = None) -> tuple[dict, dict]:
     """Send the rubric prompt and parse the JSON response.
 
-    Returns (parsed_json, usage_dict). Backend chosen by env vars.
+    Returns (parsed_json, usage_dict). Backend chosen by config.LLM_BACKEND.
     """
     system, user = build_prompt(transcript, metadata, word_timings)
-    if _backend() == "openrouter":
-        return _score_via_openrouter(system, user)
-    return _score_via_anthropic(system, user)
+    b = _backend()
+    if b == "bedrock":
+        return _score_via_messages_api(
+            _get_bedrock_client(), config.BEDROCK_MODEL, "bedrock",
+            system, user,
+        )
+    if b == "anthropic":
+        return _score_via_messages_api(
+            _get_anthropic_client(), config.CLAUDE_MODEL, "anthropic",
+            system, user,
+        )
+    return _score_via_openrouter(system, user)
