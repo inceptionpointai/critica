@@ -11,7 +11,7 @@ resources:
 images:
 - name: critica
   newName: 673066883217.dkr.ecr.us-west-2.amazonaws.com/ipoint-critica-prod
-  newTag: 49cd774f235fd766a2252720ab0357f8ddb91f39
+  newTag: 1b542e207f0f51a86acb5414f71c211921721b8e
 
 commonLabels:
   environment: prod
