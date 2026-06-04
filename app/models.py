@@ -49,14 +49,23 @@ class MegaphoneReviewRequest(BaseModel):
 
 class DimensionScore(BaseModel):
     name: str
-    score: float = Field(..., ge=0, le=10)
+    # Optional because Bedrock occasionally returns "N/A" / "" / null for
+    # a dimension it can't anchor against (e.g. pacing on a 30s teaser).
+    # The contract: a score is either a real number 0-10 or null.
+    # Non-numeric strings ("N/A", "n/a", "") are normalized to null upstream
+    # in routes/review._build_rubric_result via _safe_score.
+    score: Optional[float] = Field(None, ge=0, le=10)
     rationale: str
 
 
 class RubricResult(BaseModel):
     """The structured output of the LLM scoring pass."""
-    overall_score: float = Field(..., ge=0, le=10)
-    grade: str = Field(..., description="A/B/C/D/F")
+    # See DimensionScore.score for why overall_score is nullable too.
+    # In practice the LLM almost always returns a real number here — only
+    # an entirely-uncoverable transcript yields null — but the API contract
+    # must not 502 on the edge case.
+    overall_score: Optional[float] = Field(None, ge=0, le=10)
+    grade: str = Field(..., description="A/B/C/D/F (or 'N/A' when overall_score is null)")
     dimensions: List[DimensionScore]
     summary: str = Field(..., description="One-paragraph executive summary")
     critique: str = Field(..., description="Long-form prose critique — the meat of the review")

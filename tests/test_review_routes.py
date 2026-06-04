@@ -170,7 +170,7 @@ def test_review_transcript_empty_returns_422(client, monkeypatch, payload):
 
 _REVIEW_COMPLETE_RE = re.compile(
     r"review complete backend=\S+ model=\S+ in_tok=\d+ out_tok=\d+ "
-    r"cache_read=\d+ elapsed_s=[\d.]+ score=[\d.]+ grade=[A-F] "
+    r"cache_read=\d+ elapsed_s=[\d.]+ score=(?:[\d.]+|N/A) grade=[A-F] "
     r"refusal=\w+ ep=\S+ req=\S+"
 )
 
@@ -198,6 +198,158 @@ def test_review_complete_log_is_structured(
     assert matched, (
         "no structured 'review complete' log line found; got:\n"
         + "\n".join(r.getMessage() for r in caplog.records)
+    )
+
+
+# ── Rubric flakiness — "N/A" / "" / null scores must not 502 ────────────────
+
+@pytest.mark.parametrize("bad_score", ["N/A", "n/a", "N/a", "", "   ", None, "unavailable", "-"])
+def test_review_transcript_tolerates_na_dimension_score(
+    client, monkeypatch, caplog, fake_rubric_parsed, fake_usage_bedrock, bad_score,
+):
+    """Bedrock occasionally returns "N/A" (or null/empty/etc.) for a single
+    dimension's score. Pre-fix this raised float("N/A") → ValueError → 502
+    for the whole review. The contract now: that dimension's score is null,
+    every other dimension still scores, the request returns 200, and a
+    structured warning is logged so the operator can see it happened."""
+    # Mutate one dimension's score to the unparseable value.
+    bad_rubric = {
+        **fake_rubric_parsed,
+        "dimensions": [
+            {**fake_rubric_parsed["dimensions"][0], "score": bad_score},
+            *fake_rubric_parsed["dimensions"][1:],
+        ],
+    }
+    monkeypatch.setattr(
+        review_route.claude, "score_transcript",
+        lambda _t, _m, _w: (bad_rubric, fake_usage_bedrock),
+    )
+
+    logging.getLogger("critica.review").setLevel(logging.WARNING)
+    with caplog.at_level(logging.WARNING):
+        resp = client.post(
+            "/api/v1/review/transcript",
+            json={"transcript": "a fine podcast about software"},
+            headers=AUTH,
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # The flaky dimension is null; the other nine still have numeric scores.
+    dims = body["rubric"]["dimensions"]
+    assert dims[0]["score"] is None
+    assert all(d["score"] is not None for d in dims[1:])
+    # Structured warning was emitted so operators can spot it.
+    assert any(
+        "rubric_score_unavailable" in r.getMessage()
+        and "field=dimensions.subject_tone_alignment" in r.getMessage()
+        for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+
+
+def test_review_transcript_tolerates_na_overall_score(
+    client, monkeypatch, caplog, fake_rubric_parsed, fake_usage_bedrock,
+):
+    """Symmetric to the per-dimension test, for the top-level overall_score
+    field. Must not 502; overall_score is null and grade comes through as-is."""
+    bad_rubric = {**fake_rubric_parsed, "overall_score": "N/A"}
+    monkeypatch.setattr(
+        review_route.claude, "score_transcript",
+        lambda _t, _m, _w: (bad_rubric, fake_usage_bedrock),
+    )
+
+    logging.getLogger("critica.review").setLevel(logging.WARNING)
+    with caplog.at_level(logging.WARNING):
+        resp = client.post(
+            "/api/v1/review/transcript",
+            json={"transcript": "a fine podcast about software"},
+            headers=AUTH,
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["rubric"]["overall_score"] is None
+    assert any(
+        "rubric_score_unavailable" in r.getMessage()
+        and "field=overall_score" in r.getMessage()
+        for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+
+
+def test_review_megaphone_log_emits_when_overall_score_is_na(
+    client, monkeypatch, caplog, fake_rubric_parsed, fake_usage_bedrock,
+):
+    """Regression: the Megaphone handler's "review complete" log line must
+    survive overall_score="N/A". Pre-fix the format string had `score=%.1f`
+    while the arg was a `str` ("N/A"), so stdlib logging swallowed the
+    TypeError via handleError and the structured NTH#5 line was silently
+    dropped on the Megaphone path. The fix swaps `%.1f` → `%s` so the line
+    renders as `score=N/A` cleanly."""
+    fake_episode = {
+        "spreaker_episode_id":  "",
+        "spreaker_show_id":     "",
+        "megaphone_episode_id": "mp-ep-1",
+        "megaphone_podcast_id": "mp-pod-1",
+        "megaphone_network_id": "mp-net-1",
+        "title":         "A Megaphone show",
+        "description":   "",
+        "audio_url":     "https://example.com/mp.mp3",
+        "duration_ms":   600_000,
+        "published_at":  None,
+        "site_url":      "",
+        "explicit":      False,
+        "image_url":     "",
+        "raw":           {},
+    }
+    monkeypatch.setattr(
+        review_route, "megaphone_fetch_episode",
+        lambda _net, _pod, _ep: fake_episode,
+    )
+    monkeypatch.setattr(
+        review_route, "fetch_audio_to_tmp", lambda _url: "/tmp/critica/fake.mp3"
+    )
+    monkeypatch.setattr(
+        review_route, "transcribe",
+        lambda _p: {"transcript": "hello world", "words": [], "duration_s": 600.0, "language": "en"},
+    )
+    bad_rubric = {**fake_rubric_parsed, "overall_score": "N/A"}
+    monkeypatch.setattr(
+        review_route.claude, "score_transcript",
+        lambda _t, _m, _w: (bad_rubric, fake_usage_bedrock),
+    )
+
+    logging.getLogger("critica.review").setLevel(logging.INFO)
+    with caplog.at_level(logging.INFO):
+        resp = client.post(
+            "/api/v1/review/megaphone",
+            json={
+                "network_id": "mp-net-1",
+                "podcast_id": "mp-pod-1",
+                "episode_id": "mp-ep-1",
+            },
+            headers=AUTH,
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["rubric"]["overall_score"] is None
+
+    # The structured "review complete" log line must have been emitted
+    # (pre-fix it was silently dropped because "%.1f" % "N/A" raised
+    # TypeError inside stdlib logging.handleError).
+    matched = [
+        r for r in caplog.records
+        if "review complete" in r.getMessage()
+        and "score=N/A" in r.getMessage()
+        and "ep=mp:mp-ep-1" in r.getMessage()
+    ]
+    assert matched, (
+        "no megaphone 'review complete ... score=N/A' log line found; got:\n"
+        + "\n".join(r.getMessage() for r in caplog.records)
+    )
+    # And the broader NTH#5 regex (now relaxed to allow score=N/A) still matches.
+    assert any(_REVIEW_COMPLETE_RE.search(r.getMessage()) for r in matched), (
+        "megaphone log line did not match the NTH#5 structured-log regex"
     )
 
 
