@@ -58,6 +58,18 @@ class RefusalCheck(BaseModel):
     snippets: List[str] = Field(default_factory=list)
 
 
+class UsageInfo(BaseModel):
+    """LLM call accounting — surfaced so the runbook can assert the backend
+    that actually served the request (vs. inferring it from log lines)."""
+    backend: str = Field(..., description="'bedrock' | 'anthropic' | 'openrouter'")
+    model: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    elapsed_s: Optional[float] = None
+
+
 class ReviewResponse(BaseModel):
     request_id: str
     spreaker_episode_id: Optional[str] = None
@@ -74,6 +86,9 @@ class ReviewResponse(BaseModel):
     )
     elapsed_s: float
     model: str
+    usage: UsageInfo = Field(
+        ..., description="LLM backend + token accounting — used by v1.0.1 runbook to assert Bedrock served the request"
+    )
     context_ref: Optional[str] = None
 
 

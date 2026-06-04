@@ -13,6 +13,10 @@ from . import config
 log = logging.getLogger("critica.spreaker")
 
 
+class SpreakerNotFound(RuntimeError):
+    """Spreaker returned 404 for the requested episode id."""
+
+
 def _headers() -> dict:
     if not config.SPREAKER_API_KEY:
         raise RuntimeError("SPREAKER_API_KEY not set")
@@ -22,14 +26,14 @@ def _headers() -> dict:
 def fetch_episode(episode_id: str) -> dict:
     """GET /v2/episodes/<id> → normalized dict.
 
-    Raises RuntimeError on Spreaker errors. No retries — Spreaker is
-    historically reliable; if it's down, we want the request to fail
-    loudly and the caller to retry.
+    Raises SpreakerNotFound on HTTP 404 so the route can map it to a
+    user-facing 404. Other Spreaker failures raise RuntimeError and the
+    route maps them to 502.
     """
     url = f"{config.SPREAKER_BASE_URL}/episodes/{episode_id}"
     r = requests.get(url, headers=_headers(), timeout=30)
     if r.status_code == 404:
-        raise RuntimeError(f"spreaker episode {episode_id} not found")
+        raise SpreakerNotFound(f"spreaker episode {episode_id} not found")
     r.raise_for_status()
     body = r.json()
     ep = body.get("response", {}).get("episode") or body.get("episode") or body

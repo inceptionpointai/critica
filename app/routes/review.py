@@ -10,15 +10,29 @@ from .. import config, db
 from ..auth import require_bearer
 from ..llm import claude
 from ..models import (DimensionScore, RefusalCheck, ReviewRequest,
-                      ReviewResponse, RubricResult, TranscriptReviewRequest)
+                      ReviewResponse, RubricResult, TranscriptReviewRequest,
+                      UsageInfo)
 from ..refusal import detect_refusal
 from ..rubric import _bucket_wpm
-from ..spreaker import fetch_episode
+from ..spreaker import SpreakerNotFound, fetch_episode
 from ..tmpfiles import managed
 from ..transcribe import fetch_audio_to_tmp, transcribe
 
 router = APIRouter(prefix="/api/v1")
 log = logging.getLogger("critica.review")
+
+
+def _usage_info(usage: dict, elapsed_s: float) -> UsageInfo:
+    """Project the llm.claude usage dict onto the public schema."""
+    return UsageInfo(
+        backend=usage.get("backend", "unknown"),
+        model=usage.get("model", config.CLAUDE_MODEL),
+        input_tokens=int(usage.get("input_tokens") or 0),
+        output_tokens=int(usage.get("output_tokens") or 0),
+        cache_read_input_tokens=int(usage.get("cache_read_input_tokens") or 0),
+        cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens") or 0),
+        elapsed_s=elapsed_s,
+    )
 
 
 def _pacing_stats(word_timings: list) -> tuple[float | None, float | None]:
@@ -94,6 +108,9 @@ def review(req: ReviewRequest, api_key: str = Depends(require_bearer)):
     # 1. Fetch episode metadata
     try:
         episode = fetch_episode(req.spreaker_episode_id)
+    except SpreakerNotFound as e:
+        log.info("spreaker 404: ep=%s", req.spreaker_episode_id)
+        raise HTTPException(404, str(e))
     except Exception as e:
         log.warning("spreaker fetch failed: %s", e)
         raise HTTPException(502, f"spreaker fetch failed: {e}")
@@ -156,9 +173,16 @@ def review(req: ReviewRequest, api_key: str = Depends(require_bearer)):
 
     elapsed = round(time.time() - t_start, 3)
     log.info(
-        "review done ep=%s score=%.1f grade=%s refusal=%s elapsed_s=%.2f req=%s",
-        req.spreaker_episode_id, rubric.overall_score, rubric.grade,
-        refusal.severity, elapsed, request_id,
+        "review complete backend=%s model=%s in_tok=%d out_tok=%d cache_read=%d "
+        "elapsed_s=%.2f score=%.1f grade=%s refusal=%s ep=%s req=%s",
+        usage.get("backend", "unknown"),
+        usage.get("model", config.CLAUDE_MODEL),
+        int(usage.get("input_tokens") or 0),
+        int(usage.get("output_tokens") or 0),
+        int(usage.get("cache_read_input_tokens") or 0),
+        elapsed,
+        rubric.overall_score, rubric.grade, refusal.severity,
+        req.spreaker_episode_id, request_id,
     )
 
     # 6. Best-effort analytics write — overwrite the rubric_result dict
@@ -203,6 +227,7 @@ def review(req: ReviewRequest, api_key: str = Depends(require_bearer)):
         refusal=refusal,
         elapsed_s=elapsed,
         model=usage.get("model", config.CLAUDE_MODEL),
+        usage=_usage_info(usage, elapsed),
         context_ref=req.context_ref,
     )
 
@@ -216,6 +241,10 @@ def review_transcript(req: TranscriptReviewRequest, api_key: str = Depends(requi
     """
     request_id = uuid.uuid4()
     t_start = time.time()
+
+    if not req.transcript or not req.transcript.strip():
+        log.info("transcript review rejected: empty transcript req=%s", request_id)
+        raise HTTPException(422, "transcript is empty")
 
     refusal_result = detect_refusal(req.transcript)
     refusal = RefusalCheck(
@@ -244,6 +273,18 @@ def review_transcript(req: TranscriptReviewRequest, api_key: str = Depends(requi
     rubric = _apply_refusal_override(_build_rubric_result(parsed), refusal)
     wpm_mean, wpm_stdev = _pacing_stats(req.word_timings or [])
     elapsed = round(time.time() - t_start, 3)
+    log.info(
+        "review complete backend=%s model=%s in_tok=%d out_tok=%d cache_read=%d "
+        "elapsed_s=%.2f score=%.1f grade=%s refusal=%s ep=%s req=%s",
+        usage.get("backend", "unknown"),
+        usage.get("model", config.CLAUDE_MODEL),
+        int(usage.get("input_tokens") or 0),
+        int(usage.get("output_tokens") or 0),
+        int(usage.get("cache_read_input_tokens") or 0),
+        elapsed,
+        rubric.overall_score, rubric.grade, refusal.severity,
+        "transcript", request_id,
+    )
 
     parsed_override = {
         **parsed,
@@ -286,5 +327,6 @@ def review_transcript(req: TranscriptReviewRequest, api_key: str = Depends(requi
         refusal=refusal,
         elapsed_s=elapsed,
         model=usage.get("model", config.CLAUDE_MODEL),
+        usage=_usage_info(usage, elapsed),
         context_ref=req.context_ref,
     )
