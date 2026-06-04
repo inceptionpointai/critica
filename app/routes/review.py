@@ -9,9 +9,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from .. import config, db
 from ..auth import require_bearer
 from ..llm import claude
-from ..models import (DimensionScore, RefusalCheck, ReviewRequest,
-                      ReviewResponse, RubricResult, TranscriptReviewRequest,
-                      UsageInfo)
+from ..megaphone import MegaphoneNotFound
+from ..megaphone import fetch_episode as megaphone_fetch_episode
+from ..models import (DimensionScore, MegaphoneReviewRequest, RefusalCheck,
+                      ReviewRequest, ReviewResponse, RubricResult,
+                      TranscriptReviewRequest, UsageInfo)
 from ..refusal import detect_refusal
 from ..rubric import _bucket_wpm
 from ..spreaker import SpreakerNotFound, fetch_episode
@@ -218,6 +220,145 @@ def review(req: ReviewRequest, api_key: str = Depends(require_bearer)):
     return ReviewResponse(
         request_id=str(request_id),
         spreaker_episode_id=episode["spreaker_episode_id"],
+        title=episode.get("title"),
+        duration_s=duration_s,
+        detected_language=detected,
+        pacing_wpm_mean=wpm_mean,
+        pacing_wpm_stdev=wpm_stdev,
+        rubric=rubric,
+        refusal=refusal,
+        elapsed_s=elapsed,
+        model=usage.get("model", config.CLAUDE_MODEL),
+        usage=_usage_info(usage, elapsed),
+        context_ref=req.context_ref,
+    )
+
+
+@router.post("/review/megaphone", response_model=ReviewResponse)
+def review_megaphone(req: MegaphoneReviewRequest, api_key: str = Depends(require_bearer)):
+    """Pull a Megaphone episode, transcribe it, score against the rubric.
+
+    Mirrors /review but sources the episode from Megaphone instead of
+    Spreaker. All three Megaphone IDs are required because the API does
+    not support bare-episode lookups.
+    """
+    request_id = uuid.uuid4()
+    t_start = time.time()
+
+    log.info("review starting ep=mp:%s pod=%s net=%s ctx=%s req=%s",
+             req.episode_id, req.podcast_id, req.network_id,
+             req.context_ref or "-", request_id)
+
+    try:
+        episode = megaphone_fetch_episode(req.network_id, req.podcast_id, req.episode_id)
+    except MegaphoneNotFound as e:
+        log.info("megaphone 404: ep=%s pod=%s net=%s",
+                 req.episode_id, req.podcast_id, req.network_id)
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        log.warning("megaphone fetch failed: %s", e)
+        raise HTTPException(502, f"megaphone fetch failed: {e}")
+
+    if not episode["audio_url"]:
+        raise HTTPException(404, f"megaphone episode {req.episode_id} has no audio URL")
+
+    try:
+        with managed(fetch_audio_to_tmp(episode["audio_url"])) as audio_path:
+            stt = transcribe(audio_path)
+    except Exception as e:
+        log.warning("transcription failed: %s", e)
+        raise HTTPException(502, f"transcription failed: {e}")
+
+    transcript = stt["transcript"]
+    words      = stt["words"]
+    duration_s = stt["duration_s"] or (episode["duration_ms"] / 1000.0 if episode["duration_ms"] else None)
+    detected   = stt["language"]
+
+    if not transcript:
+        raise HTTPException(422, "Whisper returned empty transcript")
+
+    refusal_result = detect_refusal(transcript)
+    refusal = RefusalCheck(
+        severity=refusal_result.severity,
+        matched_labels=refusal_result.matched_labels,
+        snippets=refusal_result.snippets,
+    )
+    if refusal.severity == "hard":
+        log.warning("refusal_leak hard: ep=mp:%s labels=%s",
+                    req.episode_id, refusal.matched_labels[:5])
+
+    metadata = {
+        "title":         episode.get("title"),
+        "description":   episode.get("description"),
+        "subject_name":  req.subject_name,
+        "subject_brand": req.subject_brand,
+        "duration_s":    duration_s,
+        "refusal_hint":  (f"DETERMINISTIC DETECTOR FLAG: refusal severity={refusal.severity}, "
+                          f"matched={refusal.matched_labels[:3]}. The transcript likely "
+                          "contains unedited LLM refusal text. Score subject_body_match=0, "
+                          "narrative_arc=0, original_synthesis=0 accordingly.")
+                         if refusal.severity == "hard" else None,
+    }
+    try:
+        parsed, usage = claude.score_transcript(transcript, metadata, words)
+    except Exception as e:
+        log.warning("claude scoring failed: %s", e)
+        raise HTTPException(502, f"scoring failed: {e}")
+
+    rubric = _apply_refusal_override(_build_rubric_result(parsed), refusal)
+    wpm_mean, wpm_stdev = _pacing_stats(words)
+    elapsed = round(time.time() - t_start, 3)
+    log.info(
+        "review complete backend=%s model=%s in_tok=%d out_tok=%d cache_read=%d "
+        "elapsed_s=%.2f score=%.1f grade=%s refusal=%s ep=mp:%s req=%s",
+        usage.get("backend", "unknown"),
+        usage.get("model", config.CLAUDE_MODEL),
+        int(usage.get("input_tokens") or 0),
+        int(usage.get("output_tokens") or 0),
+        int(usage.get("cache_read_input_tokens") or 0),
+        elapsed,
+        rubric.overall_score, rubric.grade, refusal.severity,
+        req.episode_id, request_id,
+    )
+
+    parsed_override = {
+        **parsed,
+        "overall_score": rubric.overall_score,
+        "grade": rubric.grade,
+        "summary": rubric.summary,
+        "recommendations": rubric.recommendations,
+    }
+    # Megaphone ids land in raw_metadata.megaphone.* until the schema gets
+    # dedicated columns (deferred — see project memory).
+    raw_md = {**(episode.get("raw") or {}),
+              "megaphone_episode_id": episode["megaphone_episode_id"],
+              "megaphone_podcast_id": episode["megaphone_podcast_id"],
+              "megaphone_network_id": episode["megaphone_network_id"]}
+    db.record_review(
+        request_id=request_id,
+        spreaker_episode_id=None,
+        spreaker_show_id=None,
+        title=episode.get("title"),
+        duration_s=duration_s,
+        detected_language=detected,
+        pacing_wpm_mean=wpm_mean,
+        pacing_wpm_stdev=wpm_stdev,
+        rubric_result=parsed_override,
+        transcript=transcript,
+        word_timings=words,
+        raw_metadata=raw_md,
+        usage=usage,
+        elapsed_s=elapsed,
+        caller_fingerprint=db.fingerprint_key(api_key),
+        context_ref=req.context_ref,
+        refusal_severity=refusal.severity,
+        refusal_labels=refusal.matched_labels,
+    )
+
+    return ReviewResponse(
+        request_id=str(request_id),
+        spreaker_episode_id=None,
+        megaphone_episode_id=episode["megaphone_episode_id"] or req.episode_id,
         title=episode.get("title"),
         duration_s=duration_s,
         detected_language=detected,
