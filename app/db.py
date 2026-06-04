@@ -27,8 +27,20 @@ def _get_pool():
     with _pool_lock:
         if _pool is not None or _pool_disabled:
             return _pool
-        if not config.ANALYTICS_DB_URL.strip():
+        url = config.ANALYTICS_DB_URL.strip()
+        if not url:
             log.info("sink disabled — ANALYTICS_DB_URL not set")
+            _pool_disabled = True
+            return None
+        # Belt-and-suspenders: refuse to write anywhere other than the
+        # prod analytics-db. Staging has no critica schema, and writing
+        # cross-env would corrupt prod with staging smoke data.
+        _ALLOWED_HOST = "analytics-db-rw.prod.svc.cluster.local"
+        if _ALLOWED_HOST not in url:
+            log.warning(
+                "sink disabled — ANALYTICS_DB_URL host is not %s (got opaque url); "
+                "refusing to write", _ALLOWED_HOST,
+            )
             _pool_disabled = True
             return None
         try:
