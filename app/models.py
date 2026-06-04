@@ -29,6 +29,22 @@ class TranscriptReviewRequest(BaseModel):
     context_ref: Optional[str] = None
 
 
+class MegaphoneReviewRequest(BaseModel):
+    """POST /api/v1/review/megaphone — review an episode published on Megaphone.
+
+    All three IDs are required because Megaphone's API does not support
+    bare-episode-id lookups (GET /networks/<n>/podcasts/<p>/episodes/<e>).
+    The producer is expected to join arc.megaphone_episodes →
+    arc.megaphone_podcasts to obtain them before POSTing here.
+    """
+    network_id: str = Field(..., description="Megaphone network (organization) id")
+    podcast_id: str = Field(..., description="Megaphone podcast (show) id")
+    episode_id: str = Field(..., description="Megaphone episode id")
+    context_ref: Optional[str] = Field(None, description="Free-form correlation tag")
+    subject_name: Optional[str] = None
+    subject_brand: Optional[str] = None
+
+
 # ── Rubric ─────────────────────────────────────────────────────────────────
 
 class DimensionScore(BaseModel):
@@ -73,6 +89,7 @@ class UsageInfo(BaseModel):
 class ReviewResponse(BaseModel):
     request_id: str
     spreaker_episode_id: Optional[str] = None
+    megaphone_episode_id: Optional[str] = None
     title: Optional[str] = None
     duration_s: Optional[float] = None
     detected_language: Optional[str] = None

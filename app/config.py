@@ -107,6 +107,12 @@ WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "whisper-1")
 # Spreaker
 SPREAKER_BASE_URL = os.environ.get("SPREAKER_BASE_URL", "https://api.spreaker.com/v2")
 
+# Megaphone. Published episodes after the 2026-Q2 cutover land here instead of
+# Spreaker. Auth scheme differs: Megaphone uses Rails-style 'Token token="..."',
+# not Bearer. The token is shared org-wide (SSM /prod/shared/megaphone-api-token).
+MEGAPHONE_API_TOKEN = os.environ.get("MEGAPHONE_API_TOKEN", "")
+MEGAPHONE_BASE_URL  = os.environ.get("MEGAPHONE_BASE_URL", "https://cms.megaphone.fm/api")
+
 # Analytics sink
 ANALYTICS_DB_URL = os.environ.get("ANALYTICS_DB_URL", "")
 
