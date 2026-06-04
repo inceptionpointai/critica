@@ -4,17 +4,17 @@ kind: Kustomization
 namespace: staging
 
 resources:
-  - ../../base
-  - externalsecret.yaml
-  - ingressroute.yaml
+- ../../base
+- externalsecret.yaml
+- ingressroute.yaml
 
 images:
-  - name: critica
-    newName: 673066883217.dkr.ecr.us-west-2.amazonaws.com/ipoint-critica-prod
-    newTag: ea0206bfb30f93dfd83247c9d46b7087b5d532f7
+- name: critica
+  newName: 673066883217.dkr.ecr.us-west-2.amazonaws.com/ipoint-critica-prod
+  newTag: 038ff8e312cb3c4e667ba52ff60078db44135ba6
 
 commonLabels:
   environment: staging
 
 patches:
-  - path: patches/replicas.yaml
+- path: patches/replicas.yaml
