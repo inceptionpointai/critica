@@ -11,7 +11,7 @@ resources:
 images:
 - name: critica
   newName: 673066883217.dkr.ecr.us-west-2.amazonaws.com/ipoint-critica-prod
-  newTag: 038ff8e312cb3c4e667ba52ff60078db44135ba6
+  newTag: 1e49eb51c4e433c39d688657610d3ff904286228
 
 commonLabels:
   environment: staging
