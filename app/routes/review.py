@@ -48,21 +48,79 @@ def _pacing_stats(word_timings: list) -> tuple[float | None, float | None]:
     return round(statistics.mean(wpms), 1), round(statistics.stdev(wpms), 1)
 
 
+_NA_TOKENS = {"n/a", "na", "none", "null", "unavailable", "unknown", "-", "—"}
+
+
+def _fmt_score(score: float | None) -> str:
+    """Render a possibly-null score for the structured log line. Keep the
+    field shape `score=<token>` stable so the v1.0.1 NTH#5 regex still
+    matches when the score happens to be unavailable for an episode."""
+    return f"{score:.1f}" if score is not None else "N/A"
+
+
+def _safe_score(raw, *, field: str, context: str = "") -> float | None:
+    """Coerce an LLM-supplied score to a float, or to None when the model
+    declined to score the dimension.
+
+    Bedrock occasionally returns "N/A" (or "", "n/a", null, an explicit
+    "unavailable" sentinel) for a single dimension on episodes where
+    the rubric anchor doesn't apply (e.g. pacing_variance on a 30s
+    promo). Pre-fix, ``float("N/A")`` raised ValueError → HTTP 502 for
+    the entire request, even when 9/10 dimensions scored fine. We treat
+    these as a structured null instead and log so the operator can spot
+    a model that's punting too often.
+    """
+    if raw is None:
+        log.warning("rubric_score_unavailable field=%s reason=null context=%s",
+                    field, context or "-")
+        return None
+    if isinstance(raw, bool):
+        # bool is an int subclass — guard before the numeric branch so
+        # True/False don't slip through as 1.0/0.0.
+        log.warning("rubric_score_unavailable field=%s reason=bool value=%r context=%s",
+                    field, raw, context or "-")
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if not stripped or stripped.lower() in _NA_TOKENS:
+            log.warning("rubric_score_unavailable field=%s reason=na_token value=%r context=%s",
+                        field, raw, context or "-")
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            log.warning("rubric_score_unavailable field=%s reason=non_numeric value=%r context=%s",
+                        field, raw, context or "-")
+            return None
+    log.warning("rubric_score_unavailable field=%s reason=unexpected_type type=%s context=%s",
+                field, type(raw).__name__, context or "-")
+    return None
+
+
 def _build_rubric_result(parsed: dict) -> RubricResult:
     """Validate the LLM's JSON against our schema, with helpful errors
-    if the model went off-script."""
+    if the model went off-script.
+
+    Scores ("overall_score" and per-dimension "score") are run through
+    _safe_score so an "N/A"/null/non-numeric value yields a null score
+    rather than a 502. Structural problems (missing keys, dimensions not
+    a list, missing summary/critique/grade) still raise 502 — those are
+    contract violations, not score-availability gaps.
+    """
     try:
+        dimensions = []
+        for d in parsed["dimensions"]:
+            dimensions.append(DimensionScore(
+                name=d["name"],
+                score=_safe_score(d.get("score"), field=f"dimensions.{d.get('name', '?')}"),
+                rationale=d["rationale"],
+            ))
         return RubricResult(
-            overall_score=float(parsed["overall_score"]),
+            overall_score=_safe_score(parsed.get("overall_score"), field="overall_score"),
             grade=str(parsed["grade"]),
-            dimensions=[
-                DimensionScore(
-                    name=d["name"],
-                    score=float(d["score"]),
-                    rationale=d["rationale"],
-                )
-                for d in parsed["dimensions"]
-            ],
+            dimensions=dimensions,
             summary=parsed["summary"],
             critique=parsed["critique"],
             recommendations=list(parsed.get("recommendations") or []),
@@ -176,14 +234,14 @@ def review(req: ReviewRequest, api_key: str = Depends(require_bearer)):
     elapsed = round(time.time() - t_start, 3)
     log.info(
         "review complete backend=%s model=%s in_tok=%d out_tok=%d cache_read=%d "
-        "elapsed_s=%.2f score=%.1f grade=%s refusal=%s ep=%s req=%s",
+        "elapsed_s=%.2f score=%s grade=%s refusal=%s ep=%s req=%s",
         usage.get("backend", "unknown"),
         usage.get("model", config.CLAUDE_MODEL),
         int(usage.get("input_tokens") or 0),
         int(usage.get("output_tokens") or 0),
         int(usage.get("cache_read_input_tokens") or 0),
         elapsed,
-        rubric.overall_score, rubric.grade, refusal.severity,
+        _fmt_score(rubric.overall_score), rubric.grade, refusal.severity,
         req.spreaker_episode_id, request_id,
     )
 
@@ -310,14 +368,14 @@ def review_megaphone(req: MegaphoneReviewRequest, api_key: str = Depends(require
     elapsed = round(time.time() - t_start, 3)
     log.info(
         "review complete backend=%s model=%s in_tok=%d out_tok=%d cache_read=%d "
-        "elapsed_s=%.2f score=%.1f grade=%s refusal=%s ep=mp:%s req=%s",
+        "elapsed_s=%.2f score=%s grade=%s refusal=%s ep=mp:%s req=%s",
         usage.get("backend", "unknown"),
         usage.get("model", config.CLAUDE_MODEL),
         int(usage.get("input_tokens") or 0),
         int(usage.get("output_tokens") or 0),
         int(usage.get("cache_read_input_tokens") or 0),
         elapsed,
-        rubric.overall_score, rubric.grade, refusal.severity,
+        _fmt_score(rubric.overall_score), rubric.grade, refusal.severity,
         req.episode_id, request_id,
     )
 
@@ -416,14 +474,14 @@ def review_transcript(req: TranscriptReviewRequest, api_key: str = Depends(requi
     elapsed = round(time.time() - t_start, 3)
     log.info(
         "review complete backend=%s model=%s in_tok=%d out_tok=%d cache_read=%d "
-        "elapsed_s=%.2f score=%.1f grade=%s refusal=%s ep=%s req=%s",
+        "elapsed_s=%.2f score=%s grade=%s refusal=%s ep=%s req=%s",
         usage.get("backend", "unknown"),
         usage.get("model", config.CLAUDE_MODEL),
         int(usage.get("input_tokens") or 0),
         int(usage.get("output_tokens") or 0),
         int(usage.get("cache_read_input_tokens") or 0),
         elapsed,
-        rubric.overall_score, rubric.grade, refusal.severity,
+        _fmt_score(rubric.overall_score), rubric.grade, refusal.severity,
         "transcript", request_id,
     )
 
