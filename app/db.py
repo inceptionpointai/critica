@@ -73,7 +73,7 @@ def fingerprint_key(api_key: str) -> str:
 _INSERT_REVIEW = """
 INSERT INTO critica.episode_reviews (
     request_id, spreaker_episode_id, spreaker_show_id, show_title, title,
-    duration_s, detected_language,
+    duration_s, detected_language, published_at,
     pacing_wpm_mean, pacing_wpm_stdev,
     overall_score, grade,
     dimensions, summary, critique, recommendations,
@@ -83,7 +83,7 @@ INSERT INTO critica.episode_reviews (
     refusal_detected, refusal_severity, refusal_labels
 ) VALUES (
     %s, %s, %s, %s, %s,
-    %s, %s,
+    %s, %s, %s,
     %s, %s,
     %s, %s,
     %s::jsonb, %s, %s, %s::jsonb,
@@ -124,6 +124,10 @@ def record_review(
     show_title: Optional[str] = None,
     refusal_severity: str = "none",
     refusal_labels: Optional[list] = None,
+    # ISO-8601 string (Spreaker `published_at` / Megaphone `pubdate`) or
+    # datetime — psycopg casts both to timestamptz. None when the source
+    # has no publish date (e.g. /review/transcript without the field).
+    published_at: Optional[Any] = None,
 ) -> None:
     pool = _get_pool()
     if pool is None:
@@ -140,6 +144,7 @@ def record_review(
                     title,
                     duration_s,
                     detected_language,
+                    published_at or None,
                     pacing_wpm_mean,
                     pacing_wpm_stdev,
                     rubric_result.get("overall_score"),

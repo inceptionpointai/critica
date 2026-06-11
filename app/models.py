@@ -1,4 +1,5 @@
 """Pydantic request/response schemas."""
+from datetime import datetime
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -25,6 +26,8 @@ class TranscriptReviewRequest(BaseModel):
     subject_name: Optional[str] = None
     subject_brand: Optional[str] = None
     duration_s: Optional[float] = None
+    published_at: Optional[datetime] = Field(
+        None, description="Episode publish timestamp (ISO-8601) — keys the daily analytics rollups")
     word_timings: Optional[List[dict]] = Field(None, description="Optional word-level timestamps from Whisper")
     context_ref: Optional[str] = None
 
