@@ -353,6 +353,143 @@ def test_review_megaphone_log_emits_when_overall_score_is_na(
     )
 
 
+# ── published_at flows to the analytics sink ────────────────────────────────
+# Regression for the daily_score_summary gap: the episode's publish date was
+# fetched (Spreaker `published_at` / Megaphone `pubdate`) but dropped before
+# db.record_review, leaving critica.episode_reviews.published_at NULL for
+# every producer row and freezing the day-keyed matviews at the backfill date.
+
+def _make_sink_capture(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        critica_db, "record_review", lambda **kwargs: captured.update(kwargs)
+    )
+    return captured
+
+
+def test_review_passes_published_at_to_sink(
+    client, monkeypatch, fake_rubric_parsed, fake_usage_bedrock,
+):
+    """/review must forward Spreaker's published_at into record_review."""
+    fake_episode = {
+        "spreaker_episode_id": "59595876",
+        "spreaker_show_id":    "0000",
+        "title":         "JAKE TALKS WITH WALT",
+        "description":   "",
+        "audio_url":     "https://example.com/audio.mp3",
+        "duration_ms":   600_000,
+        "published_at":  "2026-06-10 07:00:12",
+        "site_url":      "",
+        "explicit":      False,
+        "image_url":     "",
+        "raw":           {},
+    }
+    captured = _make_sink_capture(monkeypatch)
+    monkeypatch.setattr(review_route, "fetch_episode", lambda _id: fake_episode)
+    monkeypatch.setattr(
+        review_route, "fetch_audio_to_tmp", lambda _url: "/tmp/critica/fake.mp3"
+    )
+    monkeypatch.setattr(
+        review_route, "transcribe",
+        lambda _p: {"transcript": "hello world", "words": [], "duration_s": 600.0, "language": "en"},
+    )
+    monkeypatch.setattr(
+        review_route.claude, "score_transcript",
+        lambda _t, _m, _w: (fake_rubric_parsed, fake_usage_bedrock),
+    )
+
+    resp = client.post(
+        "/api/v1/review",
+        json={"spreaker_episode_id": "59595876"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["published_at"] == "2026-06-10 07:00:12"
+
+
+def test_review_megaphone_passes_published_at_to_sink(
+    client, monkeypatch, fake_rubric_parsed, fake_usage_bedrock,
+):
+    """/review/megaphone must forward Megaphone's pubdate (normalized to
+    published_at by megaphone._normalize_episode) into record_review."""
+    fake_episode = {
+        "spreaker_episode_id":  "",
+        "spreaker_show_id":     "",
+        "megaphone_episode_id": "mp-ep-1",
+        "megaphone_podcast_id": "mp-pod-1",
+        "megaphone_network_id": "mp-net-1",
+        "title":         "A Megaphone show",
+        "description":   "",
+        "audio_url":     "https://example.com/mp.mp3",
+        "duration_ms":   600_000,
+        "published_at":  "2026-06-09T05:00:00.000Z",
+        "site_url":      "",
+        "explicit":      False,
+        "image_url":     "",
+        "raw":           {},
+    }
+    captured = _make_sink_capture(monkeypatch)
+    monkeypatch.setattr(
+        review_route, "megaphone_fetch_episode",
+        lambda _net, _pod, _ep: fake_episode,
+    )
+    monkeypatch.setattr(
+        review_route, "fetch_audio_to_tmp", lambda _url: "/tmp/critica/fake.mp3"
+    )
+    monkeypatch.setattr(
+        review_route, "transcribe",
+        lambda _p: {"transcript": "hello world", "words": [], "duration_s": 600.0, "language": "en"},
+    )
+    monkeypatch.setattr(
+        review_route.claude, "score_transcript",
+        lambda _t, _m, _w: (fake_rubric_parsed, fake_usage_bedrock),
+    )
+
+    resp = client.post(
+        "/api/v1/review/megaphone",
+        json={
+            "network_id": "mp-net-1",
+            "podcast_id": "mp-pod-1",
+            "episode_id": "mp-ep-1",
+        },
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["published_at"] == "2026-06-09T05:00:00.000Z"
+
+
+def test_review_transcript_passes_optional_published_at_to_sink(
+    client, monkeypatch, fake_rubric_parsed, fake_usage_bedrock,
+):
+    """/review/transcript has no episode fetch, so published_at is an
+    optional request field; when supplied it must reach record_review,
+    when omitted the sink receives None (matviews fall back to ts)."""
+    captured = _make_sink_capture(monkeypatch)
+    monkeypatch.setattr(
+        review_route.claude, "score_transcript",
+        lambda _t, _m, _w: (fake_rubric_parsed, fake_usage_bedrock),
+    )
+
+    resp = client.post(
+        "/api/v1/review/transcript",
+        json={"transcript": "a fine podcast about software",
+              "published_at": "2026-06-08T12:30:00Z"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["published_at"] is not None
+    assert captured["published_at"].isoformat().startswith("2026-06-08T12:30:00")
+
+    captured.clear()
+    resp = client.post(
+        "/api/v1/review/transcript",
+        json={"transcript": "a fine podcast about software"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["published_at"] is None
+
+
 # ── DB sink defense — non-prod host refuses to open pool ────────────────────
 
 def test_db_sink_refuses_non_prod_host(monkeypatch, caplog):
