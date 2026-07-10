@@ -10,7 +10,7 @@ resources:
 
 images:
 - name: critica
-  newName: 673066883217.dkr.ecr.us-west-2.amazonaws.com/ipoint-critica-prod
+  newName: 567274077914.dkr.ecr.us-west-2.amazonaws.com/ipoint-critica-prod
   newTag: 47959cd9dd481e37dc453725887c18d3b2547ba7
 
 commonLabels:

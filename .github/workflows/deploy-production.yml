@@ -14,9 +14,9 @@ permissions:
 
 env:
   AWS_REGION: us-west-2
-  ECR_REGISTRY: 673066883217.dkr.ecr.us-west-2.amazonaws.com
+  ECR_REGISTRY: 567274077914.dkr.ecr.us-west-2.amazonaws.com
   ECR_REPOSITORY: ipoint-critica-prod
-  ROLE_ARN: arn:aws:iam::673066883217:role/ipoint-prod-github-actions-critica
+  ROLE_ARN: arn:aws:iam::567274077914:role/ipoint-prod-github-actions-critica
 
 jobs:
   deploy:

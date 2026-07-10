@@ -62,7 +62,7 @@ cp .env.example .env   # fill in ANTHROPIC_API_KEY + SPREAKER_API_KEY + CRITICA_
 
 ## Deployment
 
-Same EKS cluster as Qualitas / Veritas. Image `673066883217.dkr.ecr.us-west-2.amazonaws.com/ipoint-critica-prod`. See `k8s/` for kustomize overlays.
+Same EKS cluster as Qualitas / Veritas. Image `567274077914.dkr.ecr.us-west-2.amazonaws.com/ipoint-critica-prod`. See `k8s/` for kustomize overlays.
 
 ## Convention notes
 
