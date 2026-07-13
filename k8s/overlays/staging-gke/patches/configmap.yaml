@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: critica-config
+data:
+  # GKE has no AWS Bedrock, and /health/ready gates on the selected backend's
+  # creds being present (for 'bedrock' it checks the IRSA web-identity token file,
+  # which does not exist on GKE — the pod would never go Ready). Until the
+  # Bedrock->Vertex port lands, run the direct Anthropic backend, which auths off
+  # the ESO-synced ANTHROPIC_API_KEY (critica-secrets). This is the critica
+  # equivalent of the vox Vertex port being deferred while the workload stays
+  # green. AWS_REGION/BEDROCK_MODEL from the base ConfigMap are inert under this
+  # backend. Flip back to 'bedrock'-style once a Vertex backend + WI grant land.
+  LLM_BACKEND: "anthropic"
