@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# GKE staging overlay. Sibling of overlays/staging (which targets the AWS
+# cluster) so the AWS deployment is untouched during the migration. The GKE
+# ArgoCD (project=applications) points here.
+#
+# Deltas vs overlays/staging:
+#   * image  -> Artifact Registry (us-central1) instead of ECR (us-west-2).
+#   * externalsecret -> GCP Secret Manager instead of AWS Parameter Store.
+#   * configmap patch -> LLM_BACKEND=anthropic (GKE has no Bedrock; the direct
+#     Anthropic backend runs off the ESO-synced ANTHROPIC_API_KEY until the
+#     Bedrock->Vertex port lands). See patches/configmap.yaml.
+#   * ingressroute.yaml is intentionally NOT included: external exposure + TLS
+#     are a cutover-time concern (DNS still points at AWS during migration).
+namespace: prod
+
+resources:
+- ../../base
+- externalsecret.yaml
+
+images:
+- name: critica
+  newName: us-central1-docker.pkg.dev/ipointai-infra/ipoint-infra-ar/critica
+  newTag: latest
+
+commonLabels:
+  environment: staging
+
+patches:
+- path: patches/replicas.yaml
+- path: patches/configmap.yaml
