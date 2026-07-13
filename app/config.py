@@ -63,16 +63,22 @@ MAX_AUDIO_MB      = _int_env("MAX_AUDIO_MB", 500)
 REQUEST_TIMEOUT_S = _int_env("REQUEST_TIMEOUT_S", 600)
 
 # LLM
-# Three backends supported, selected by LLM_BACKEND (default 'bedrock'):
+# Four backends supported, selected by LLM_BACKEND (default 'bedrock'):
 #   1. 'bedrock'    — AWS Bedrock via anthropic.AnthropicBedrock, auth by IRSA.
-#                     Account-billed; preferred path. No API key needed.
-#   2. 'anthropic'  — Anthropic API direct via anthropic.Anthropic.
+#                     Account-billed; the pre-GKE default. No API key needed.
+#   2. 'vertex'     — GCP Vertex AI via anthropic.AnthropicVertex, auth by the
+#                     pod's Workload Identity SA (ADC, roles/aiplatform.user on
+#                     GOOGLE_CLOUD_PROJECT). No API key needed. Same Messages API
+#                     shape as Bedrock; flip here per-env during the GKE cutover.
+#   3. 'anthropic'  — Anthropic API direct via anthropic.Anthropic.
 #                     Requires ANTHROPIC_API_KEY. Kept as break-glass for when
-#                     the Bedrock plane has a regional incident.
-#   3. 'openrouter' — OpenAI-compatible router (anthropic/claude-opus-4.5 etc).
+#                     the primary plane has a regional incident.
+#   4. 'openrouter' — OpenAI-compatible router (anthropic/claude-opus-4.5 etc).
 #                     Requires OPENROUTER_API_KEY. Currently unwired in cluster
 #                     (no ExternalSecret entry) — local-dev / future-work only.
 # Routing is EXPLICIT; setting an api key alone no longer flips backends.
+# NOTE: media-gen (Nova/Titan/Stability) stays on Bedrock regardless — this
+# switch governs the Claude scoring pass only.
 LLM_BACKEND = os.environ.get("LLM_BACKEND", "bedrock").strip().lower()
 
 # AWS Bedrock. Note: AWS_REGION fallback here is the seatbelt for when the
@@ -88,12 +94,36 @@ BEDROCK_MODEL = os.environ.get(
     "us.anthropic.claude-opus-4-5-20251101-v1:0",
 )
 
+# GCP Vertex AI (Claude via publishers/anthropic). Auth is Application Default
+# Credentials — in-cluster this is the pod's Workload Identity SA (granted
+# roles/aiplatform.user on GOOGLE_CLOUD_PROJECT), the GKE analogue of Bedrock's
+# IRSA. No API key. GOOGLE_CLOUD_PROJECT is required when LLM_BACKEND=vertex.
+# Claude on Vertex lives in us-east5 (see the region availability matrix).
+GOOGLE_CLOUD_PROJECT    = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+ANTHROPIC_VERTEX_REGION = os.environ.get("ANTHROPIC_VERTEX_REGION", "us-east5")
+
+# Bedrock model id -> Vertex model id. Vertex uses the bare first-party id with
+# an '@'-separated snapshot date (publishers/anthropic), dropping the Bedrock
+# cross-region 'us.'/'anthropic.' prefix, the '-'-joined date, and the '-v1:0'
+# suffix (e.g. us.anthropic.claude-opus-4-5-20251101-v1:0 -> claude-opus-4-5@20251101).
+# Keep in sync when BEDROCK_MODEL changes.
+BEDROCK_TO_VERTEX_MODEL = {
+    "us.anthropic.claude-opus-4-5-20251101-v1:0":   "claude-opus-4-5@20251101",
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0": "claude-sonnet-4-5@20250929",
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0":  "claude-haiku-4-5@20251001",
+}
+# Vertex model id. Defaults to the Vertex equivalent of BEDROCK_MODEL so the
+# app's model choice is preserved across the backend switch; overridable.
+VERTEX_MODEL = os.environ.get("VERTEX_MODEL", "").strip() or \
+    BEDROCK_TO_VERTEX_MODEL.get(BEDROCK_MODEL, "claude-opus-4-5@20251101")
+
 # OpenRouter (break-glass / local dev)
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
 # Model id format differs by backend:
 #   bedrock:          'us.anthropic.claude-opus-4-5-20251101-v1:0' (BEDROCK_MODEL)
+#   vertex:           'claude-opus-4-5@20251101'                   (VERTEX_MODEL)
 #   anthropic direct: 'claude-opus-4-5'
 #   openrouter:       'anthropic/claude-opus-4.5'
 CLAUDE_MODEL       = os.environ.get("CLAUDE_MODEL", "claude-opus-4-5")
