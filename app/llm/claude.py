@@ -1,13 +1,15 @@
 """LLM client for Critica's scoring pass.
 
-Three backends, switched explicitly by config.LLM_BACKEND:
+Four backends, switched explicitly by config.LLM_BACKEND:
   - 'bedrock'    → anthropic.AnthropicBedrock (AWS Bedrock, IRSA-auth, default).
+  - 'vertex'     → anthropic.AnthropicVertex (GCP Vertex AI, ADC/Workload-Identity
+                   auth). Same Messages API shape as Bedrock; the GKE-native path.
   - 'anthropic'  → anthropic.Anthropic (direct API, requires ANTHROPIC_API_KEY).
   - 'openrouter' → openai.OpenAI against OpenRouter (requires OPENROUTER_API_KEY).
 
-Bedrock and Anthropic-direct share the exact same messages.create(...) shape
-including the cache_control ephemeral system block, so a single helper drives
-both.
+Bedrock, Vertex, and Anthropic-direct share the exact same messages.create(...)
+shape including the cache_control ephemeral system block, so a single helper
+drives all three.
 
 Failures bubble up. Unlike the analytics-db sink, the LLM IS the service
 contract — if scoring fails, the request fails.
@@ -25,6 +27,7 @@ log = logging.getLogger("critica.llm.claude")
 
 _anthropic_client: Any = None
 _bedrock_client: Any = None
+_vertex_client: Any = None
 _openrouter_client: Any = None
 
 
@@ -40,6 +43,23 @@ def _get_bedrock_client():
             timeout=config.REQUEST_TIMEOUT_S,
         )
     return _bedrock_client
+
+
+def _get_vertex_client():
+    """Lazy-build AnthropicVertex. google-auth resolves Application Default
+    Credentials from the pod's Workload Identity SA (roles/aiplatform.user on
+    GOOGLE_CLOUD_PROJECT) — no explicit GCP keys needed, mirroring Bedrock/IRSA."""
+    global _vertex_client
+    if _vertex_client is None:
+        from anthropic import AnthropicVertex
+        if not config.GOOGLE_CLOUD_PROJECT:
+            raise RuntimeError("GOOGLE_CLOUD_PROJECT not set")
+        _vertex_client = AnthropicVertex(
+            project_id=config.GOOGLE_CLOUD_PROJECT,
+            region=config.ANTHROPIC_VERTEX_REGION,
+            timeout=config.REQUEST_TIMEOUT_S,
+        )
+    return _vertex_client
 
 
 def _get_anthropic_client():
@@ -72,10 +92,10 @@ def _backend() -> str:
     presence were removed: with three backends the env-var-presence dance
     is a footgun."""
     b = (config.LLM_BACKEND or "").strip().lower()
-    if b in ("bedrock", "anthropic", "openrouter"):
+    if b in ("bedrock", "vertex", "anthropic", "openrouter"):
         return b
     raise RuntimeError(f"invalid LLM_BACKEND={b!r}; "
-                       f"expected one of: bedrock, anthropic, openrouter")
+                       f"expected one of: bedrock, vertex, anthropic, openrouter")
 
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -196,6 +216,11 @@ def score_transcript(transcript: str,
     if b == "bedrock":
         return _score_via_messages_api(
             _get_bedrock_client(), config.BEDROCK_MODEL, "bedrock",
+            system, user,
+        )
+    if b == "vertex":
+        return _score_via_messages_api(
+            _get_vertex_client(), config.VERTEX_MODEL, "vertex",
             system, user,
         )
     if b == "anthropic":
