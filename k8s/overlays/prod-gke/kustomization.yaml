@@ -25,7 +25,7 @@ images:
   newTag: latest
 
 commonLabels:
-  environment: staging
+  environment: prod
 
 patches:
 - path: patches/replicas.yaml
