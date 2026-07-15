@@ -12,9 +12,14 @@ data:
   # when LLM_BACKEND=vertex.
   LLM_BACKEND: "vertex"
   GOOGLE_CLOUD_PROJECT: "ipointai-staging"
-  # ANTHROPIC_VERTEX_REGION intentionally omitted: app/config.py defaults to
-  # us-east5, which is where Claude is published on Vertex. Override here only
-  # if that ever needs to differ per-env.
+  # Route via the global Vertex endpoint (aiplatform.googleapis.com) instead of
+  # config.py's us-east5 default: freshly-enabled Claude models carry near-zero
+  # regional quota (429 on every call -- observed on the megaphone producer,
+  # 2026-07-15) while the global plane has real headroom. Same escape hatch the
+  # rest of the fleet took (arc#88, vox#9/#10, pulsus#185). Flip back to a
+  # regional value once the pending quota grants land, if data residency ever
+  # starts to matter.
+  ANTHROPIC_VERTEX_REGION: "global"
   #
   # VERTEX_MODEL is the env var app/config.py's vertex path actually reads
   # (see config.VERTEX_MODEL, consumed in app/llm/claude.py's _dispatch). Bare
