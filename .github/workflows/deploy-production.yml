@@ -22,6 +22,14 @@ jobs:
   deploy:
     name: Deploy to Production
     runs-on: ubuntu-latest
+    # DISABLED: pushes to an ECR repo/role that no longer exists post-GKE-
+    # cutover -- this was a silent green no-op. GKE prod
+    # (critica-prod overlay, k8s/overlays/prod-gke) is currently a manual/
+    # pinned promotion step; no automated production GKE workflow exists yet.
+    # Left in place (not deleted) pending an operator decision to remove AWS
+    # entirely. See .github/workflows/deploy-gke.yml for the staging-gke
+    # pipeline that replaces build-deploy.yml.
+    if: false
     steps:
       - uses: actions/checkout@v5
         with:
