@@ -3,12 +3,46 @@ kind: ConfigMap
 metadata:
   name: critica-config
 data:
-  # GKE has no AWS Bedrock, and /health/ready gates on the selected backend's
-  # creds being present (for 'bedrock' it checks the IRSA web-identity token file,
-  # which does not exist on GKE — the pod would never go Ready). Until the
-  # Bedrock->Vertex port lands, run the direct Anthropic backend, which auths off
-  # the ESO-synced ANTHROPIC_API_KEY (critica-secrets). This is the critica
-  # equivalent of the vox Vertex port being deferred while the workload stays
-  # green. AWS_REGION/BEDROCK_MODEL from the base ConfigMap are inert under this
-  # backend. Flip back to 'bedrock'-style once a Vertex backend + WI grant land.
-  LLM_BACKEND: "anthropic"
+  # --- Claude-scoring backend: Vertex AI (GKE-native), prod ------------------
+  # GKE has no AWS Bedrock, so the scoring pass routes to GCP Vertex AI via
+  # anthropic.AnthropicVertex. Auth is Application Default Credentials off the
+  # pod's Workload Identity SA — the critica GSA in ipointai-prod already
+  # holds roles/aiplatform.user (see infra/.../vertex.tf); no infra work is
+  # needed for this flip. GOOGLE_CLOUD_PROJECT is required by app/config.py
+  # when LLM_BACKEND=vertex.
+  LLM_BACKEND: "vertex"
+  GOOGLE_CLOUD_PROJECT: "ipointai-prod"
+  # ANTHROPIC_VERTEX_REGION intentionally omitted: app/config.py defaults to
+  # us-east5, which is where Claude is published on Vertex. Override here only
+  # if that ever needs to differ per-env.
+  #
+  # VERTEX_MODEL is the env var app/config.py's vertex path actually reads
+  # (see config.VERTEX_MODEL, consumed in app/llm/claude.py's _dispatch). Bare
+  # model id, NO '@date' snapshot suffix — dated ids 404 on Vertex's Model
+  # Garden endpoint for this model family. This intentionally overrides
+  # config.py's BEDROCK_TO_VERTEX_MODEL fallback (which would otherwise
+  # compute a dated id from BEDROCK_MODEL).
+  #
+  # CAVEAT (do not deploy until resolved): claude-opus-4-8 is NOT YET enabled
+  # in Vertex Model Garden for ipointai-prod as of this change. Requests will
+  # fail (404/403 from Vertex) until enablement lands. Track enablement
+  # before removing draft status from the PR that introduces this.
+  VERTEX_MODEL: "claude-opus-4-8"
+  #
+  # --- Break-glass: direct Anthropic API -------------------------------------
+  # To flip back to the direct-API break-glass path (e.g. a Vertex regional
+  # incident), set LLM_BACKEND back to "anthropic" here. That path is left
+  # fully wired: ANTHROPIC_API_KEY continues to sync from GCP Secret Manager
+  # via externalsecret.yaml (critica-anthropic-api-key -> critica-secrets),
+  # and CLAUDE_MODEL (base ConfigMap, "claude-opus-4-5") is the model id the
+  # 'anthropic' backend reads. No other changes needed to revert.
+  #
+  # --- Fossil AWS/Bedrock envs -----------------------------------------------
+  # AWS_REGION and BEDROCK_MODEL are inherited from the base ConfigMap for the
+  # 'bedrock' backend, which never runs on GKE (no Bedrock here, no IRSA).
+  # They are genuinely unused by every backend this overlay can select
+  # ('vertex' or the 'anthropic' break-glass), so they are nulled out below
+  # (kustomize strategic-merge: a null value deletes the inherited key) rather
+  # than left as dead config that looks load-bearing.
+  AWS_REGION: null
+  BEDROCK_MODEL: null

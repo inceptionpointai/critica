@@ -8,9 +8,11 @@ kind: Kustomization
 # Deltas vs overlays/staging:
 #   * image  -> Artifact Registry (us-central1) instead of ECR (us-west-2).
 #   * externalsecret -> GCP Secret Manager instead of AWS Parameter Store.
-#   * configmap patch -> LLM_BACKEND=anthropic (GKE has no Bedrock; the direct
-#     Anthropic backend runs off the ESO-synced ANTHROPIC_API_KEY until the
-#     Bedrock->Vertex port lands). See patches/configmap.yaml.
+#   * configmap patch -> LLM_BACKEND=vertex (GKE has no Bedrock; the Claude
+#     scoring pass routes to GCP Vertex AI via anthropic.AnthropicVertex,
+#     auth'd by the pod's Workload Identity SA). The direct-Anthropic-API
+#     backend (ESO-synced ANTHROPIC_API_KEY) is kept wired as break-glass.
+#     See patches/configmap.yaml for the full rationale + revert instructions.
 #   * ingressroute.yaml is intentionally NOT included: external exposure + TLS
 #     are a cutover-time concern (DNS still points at AWS during migration).
 namespace: staging
