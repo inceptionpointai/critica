@@ -30,6 +30,12 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
+    # DISABLED: pushes to an ECR repo/role that no longer exists post-GKE-
+    # cutover -- this was a silent green no-op. GKE apps (critica-staging/
+    # prod) run from ipoint-infra-ar via .github/workflows/deploy-gke.yml,
+    # which is what actually ships critica now. Left in place (not deleted)
+    # pending an operator decision to remove AWS entirely.
+    if: false
     steps:
       - uses: actions/checkout@v5
 
@@ -58,6 +64,10 @@ jobs:
   bump-staging:
     needs: build
     runs-on: ubuntu-latest
+    # DISABLED: see the `build` job above -- same dead-AWS reasoning; this
+    # job would also never run today since `build` never completes, but
+    # marking it explicitly in case that changes.
+    if: false
     steps:
       - uses: actions/checkout@v5
 
