@@ -24,7 +24,7 @@ resources:
 images:
 - name: critica
   newName: us-central1-docker.pkg.dev/ipointai-infra/ipoint-infra-ar/critica
-  newTag: 19b6ae4ad4fd2a6fd76b6fa3ad6427bcd98c7d65
+  newTag: ad560646123e06eab241ccc6684beaa3d2a71a45
 
 commonLabels:
   environment: staging
